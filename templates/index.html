@@ -263,6 +263,20 @@
             color: var(--accent);
         }
 
+        .donate-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 50%;
+            transition: background 0.2s, color 0.2s;
+            font-size: 1.1rem;
+        }
+
+        .donate-btn:hover {
+            background: #0040dd30;
+        }
+
         .chat-area {
             flex: 1;
             overflow-y: auto;
@@ -622,6 +636,7 @@
                     <span id="contextText">Context: 0 tokens</span>
                 </div>
             </div>
+            <button class="donate-btn" onclick="window.open('https://www.paypal.com/donate/?hosted_button_id=P3TK84JYLNUU6', '_blank')" title="Donate">💜</button>
             <button class="settings-btn" onclick="openSettings()" title="Settings">⚙️</button>
         </div>
 
