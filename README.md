@@ -1,11 +1,10 @@
 # Ollama WebChat
 
-A web-based chat interface for Ollama with local system commands and web search capabilities.
+A web-based chat interface for Ollama with web search capabilities.
 
 ## Features
 
 - **Web Interface**: Modern chat UI with real-time responses
-- **Local Commands**: Execute read-only system commands (ls, df, free, etc.)
 - **Web Search**: Search the internet via DuckDuckGo
 - **Session Management**: Chat history persisted locally
 - **Model Selection**: Choose from available Ollama models
