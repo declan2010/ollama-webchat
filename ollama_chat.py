@@ -274,14 +274,19 @@ def send_to_ollama(model, messages, tools=None):
         return {'error': str(e)}
 
 def process_ollama_response(model, messages, tools=None):
-    """Process Ollama response, executing tools if necessary"""
+    """Process Ollama response, executing tools if necessary.
+    Returns a dict with 'response' and 'prompt_eval_count'."""
     max_iterations = 2  # Reduced to avoid infinite loops
+    last_prompt_tokens = 0
 
     for i in range(max_iterations):
         response = send_to_ollama(model, messages, tools)
 
         if 'error' in response:
-            return f"Error: {response['error']}"
+            return {'response': f"Error: {response['error']}", 'prompt_eval_count': 0}
+
+        # Capture token counts from Ollama response
+        last_prompt_tokens = response.get('prompt_eval_count', 0)
 
         # Get response message
         assistant_msg = response.get('message', {})
@@ -290,7 +295,7 @@ def process_ollama_response(model, messages, tools=None):
 
         # If no tool calls, return content directly
         if not tool_calls:
-            return content
+            return {'response': content, 'prompt_eval_count': last_prompt_tokens}
 
         # Process each tool call
         tool_results = []
@@ -360,12 +365,10 @@ def process_ollama_response(model, messages, tools=None):
 
         # If there was only one tool call and we processed it, return result directly
         if len(tool_calls) == 1 and content.strip() == '':
-            return f"Command executed:\n\n{tool_results[0]['content']}"
+            return {'response': f"Command executed:\n\n{tool_results[0]['content']}", 'prompt_eval_count': last_prompt_tokens}
 
     # If we reached max, return last tool result
-    if tool_results:
-        return f"Command executed:\n\n{tool_results[0]['content']}"
-
+    return {'response': tool_results[-1]['content'] if tool_results else content, 'prompt_eval_count': last_prompt_tokens}
     return "I couldn't complete the request. Please try a simpler question."
 
 # Ollama tools definition
@@ -619,15 +622,20 @@ def api_chat():
         # Execute local command directly (simple patterns)
         result = execute_local_command(local_cmd)
         response_text = f"[LOCAL COMMAND: {local_cmd}]\n\n{result}"
+        prompt_tokens = 0
     else:
         # Use process_ollama_response which handles native Ollama tools
         # Try primary model, if fails use fallback
-        response_text = process_ollama_response(model, session_data['messages'], OLLAMA_TOOLS)
+        result = process_ollama_response(model, session_data['messages'], OLLAMA_TOOLS)
+        response_text = result.get('response', '') if isinstance(result, dict) else result
+        prompt_tokens = result.get('prompt_eval_count', 0) if isinstance(result, dict) else 0
 
         # If error and there's a fallback, try with fallback
         if response_text.startswith('[ERROR]') and fallback_model and fallback_model != model:
             print(f"Primary model '{model}' failed, trying fallback '{fallback_model}'")
-            response_text = process_ollama_response(fallback_model, session_data['messages'], OLLAMA_TOOLS)
+            result = process_ollama_response(fallback_model, session_data['messages'], OLLAMA_TOOLS)
+            response_text = result.get('response', '') if isinstance(result, dict) else result
+            prompt_tokens = result.get('prompt_eval_count', 0) if isinstance(result, dict) else 0
             if not response_text.startswith('[ERROR]'):
                 response_text = f"[Fallback: {fallback_model}]\n\n{response_text}"
 
@@ -641,14 +649,10 @@ def api_chat():
     # Save session
     save_session(session['chat_id'], session_data)
 
-    # Estimate context usage (rough: ~4 chars per token)
-    total_chars = sum(len(m.get('content', '')) for m in session_data['messages'])
-    estimated_tokens = total_chars // 4
-
     return jsonify({
         'response': response_text,
         'session_id': session['chat_id'],
-        'context_usage': estimated_tokens
+        'context_usage': prompt_tokens
     })
 
 @app.route('/api/sessions')
