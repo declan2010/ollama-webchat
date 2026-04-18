@@ -699,11 +699,13 @@ def api_chat_stream():
                                 followup_messages.append({'role': tr['role'], 'content': tr['content']})
 
                             # Make follow-up request(s) with tool results
-                            # May need multiple rounds if model keeps calling tools
-                            max_followup_rounds = 3
+                            # Model may request more tools - limit rounds, then force text response
+                            max_followup_rounds = 5
                             for round_num in range(max_followup_rounds):
                                 logger.info("Follow-up round %d: sending %d tool results back to %s", round_num + 1, len(tool_results), model)
-                                followup_result = send_to_ollama(model, followup_messages, OLLAMA_TOOLS, stream=False)
+                                # On rounds 3+, don't send tools so model is forced to answer with text
+                                tools_for_this_round = OLLAMA_TOOLS if round_num < 2 else None
+                                followup_result = send_to_ollama(model, followup_messages, tools_for_this_round, stream=False)
                                 logger.info("Follow-up response: content_len=%d, has_tool_calls=%s", len(followup_result.get('message', {}).get('content', '')), bool(followup_result.get('message', {}).get('tool_calls')))
 
                                 if 'error' in followup_result:
@@ -722,7 +724,7 @@ def api_chat_stream():
                                     prompt_tokens = followup_result.get('prompt_eval_count', prompt_tokens)
                                     break  # Got a text response, done
 
-                                elif followup_tool_calls:
+                                elif followup_tool_calls and tools_for_this_round is not None:
                                     # Model wants more tool calls - execute them
                                     logger.info("Follow-up round %d: model requested %d more tool calls", round_num + 1, len(followup_tool_calls))
                                     # Add assistant message with tool calls to history
@@ -759,14 +761,36 @@ def api_chat_stream():
                                     # Continue loop to send tool results back
                                     continue
                                 else:
-                                    # No content and no tool calls - empty response
+                                    # No content and no tool calls (or tools disabled), or tool calls but tools disabled
+                                    # Retry without tools to force text response
+                                    if followup_tool_calls and tools_for_this_round is None:
+                                        logger.info("Model requested tools but they're disabled, retrying without tool_calls in history")
+                                        # Remove the last assistant message with tool_calls and add a simple one
+                                        followup_messages = [m for m in followup_messages if not (m.get('tool_calls'))]
+                                        followup_messages.append({'role': 'assistant', 'content': 'I have gathered the following information. Let me provide a comprehensive answer based on what I found.'})
+                                        followup_result2 = send_to_ollama(model, followup_messages, None, stream=False)
+                                        content2 = followup_result2.get('message', {}).get('content', '')
+                                        if content2:
+                                            full_response = content2
+                                            yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
+                                            prompt_tokens = followup_result2.get('prompt_eval_count', prompt_tokens)
+                                            break
                                     full_response = "(No response from model)"
                                     yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
                                     break
                             else:
-                                # Max rounds reached
-                                full_response = "(Maximum tool call rounds reached)"
-                                yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
+                                # Max rounds reached - force final response without tools
+                                logger.info("Max follow-up rounds reached, forcing text response")
+                                followup_messages.append({'role': 'assistant', 'content': 'Based on the search results I found, here is my summary:'})
+                                final_result = send_to_ollama(model, followup_messages, None, stream=False)
+                                final_content = final_result.get('message', {}).get('content', '')
+                                if final_content:
+                                    full_response = final_content
+                                    yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
+                                    prompt_tokens = final_result.get('prompt_eval_count', prompt_tokens)
+                                else:
+                                    full_response = "(Maximum tool call rounds reached)"
+                                    yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
                         break
 
                     msg = chunk.get('message', {})
