@@ -606,7 +606,7 @@ def api_chat_stream():
         logger.warning("Rate limit exceeded for IP: %s", client_ip)
         return jsonify({'error': 'Rate limit exceeded. Please wait a moment.'}), 429
 
-    # Create/load session
+    # Create/load session (streaming endpoint)
     if 'chat_id' not in session:
         import uuid
         session['chat_id'] = str(uuid.uuid4())[:8]
@@ -615,7 +615,10 @@ def api_chat_stream():
     if fallback_model:
         session['fallback_model'] = fallback_model
 
-    session_data = load_session(session['chat_id']) or {
+    # Capture session data before generator (Flask session unavailable inside generator)
+    current_chat_id = session['chat_id']
+
+    session_data = load_session(current_chat_id) or {
         'model': model,
         'fallback_model': fallback_model,
         'title': user_message[:50] + ('...' if len(user_message) > 50 else ''),
@@ -629,7 +632,7 @@ def api_chat_stream():
         'timestamp': datetime.now().isoformat()
     })
 
-    logger.info("Chat request: model=%s, msg_len=%d, session=%s", model, len(user_message), session['chat_id'])
+    logger.info("Chat request (stream): model=%s, msg_len=%d, session=%s", model, len(user_message), current_chat_id)
 
     def generate():
         full_response = ""
@@ -742,7 +745,7 @@ def api_chat_stream():
             'content': full_response,
             'timestamp': datetime.now().isoformat()
         })
-        save_session(session['chat_id'], session_data)
+        save_session(current_chat_id, session_data)
 
         # Send completion event
         yield f"data: {json.dumps({'type': 'done', 'context_usage': prompt_tokens})}\n\n"
@@ -816,7 +819,10 @@ def api_chat():
     if fallback_model:
         session['fallback_model'] = fallback_model
 
-    session_data = load_session(session['chat_id']) or {
+    # Capture session data (non-streaming, session is accessible)
+    current_chat_id = session['chat_id']
+
+    session_data = load_session(current_chat_id) or {
         'model': model,
         'fallback_model': fallback_model,
         'title': user_message[:50] + ('...' if len(user_message) > 50 else ''),
@@ -830,7 +836,7 @@ def api_chat():
         'timestamp': datetime.now().isoformat()
     })
 
-    logger.info("Chat request: model=%s, msg_len=%d, session=%s", model, len(user_message), session['chat_id'])
+    logger.info("Chat request: model=%s, msg_len=%d, session=%s", model, len(user_message), current_chat_id)
 
     # Use Ollama tools (no regex-based command detection)
     result = process_ollama_response(model, session_data['messages'], OLLAMA_TOOLS)
@@ -852,11 +858,11 @@ def api_chat():
         'timestamp': datetime.now().isoformat()
     })
 
-    save_session(session['chat_id'], session_data)
+    save_session(current_chat_id, session_data)
 
     return jsonify({
         'response': response_text,
-        'session_id': session['chat_id'],
+        'session_id': current_chat_id,
         'context_usage': prompt_tokens
     })
 
