@@ -4,174 +4,197 @@ Allows chatting with local models, selecting models, and saving sessions.
 """
 
 import json
+import logging
 import os
 import re
-import subprocess
+import time
+from collections import defaultdict
 from datetime import datetime
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, Response, render_template, request, jsonify, session
+
+# --- Configuration ---
+SESSIONS_DIR = os.environ.get('SESSIONS_DIR', 'sessions')
+DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() in ('true', '1', 'yes')
+OLLAMA_BASE_URL = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
+KEEP_ALIVE = os.environ.get('OLLAMA_KEEP_ALIVE', '5m')
+
+# --- Logging ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s'
+)
+logger = logging.getLogger('ollama-chat')
 
 app = Flask(__name__)
-app.secret_key = 'ollama-chat-secret-key-2024'
-SESSIONS_DIR = 'sessions'
+app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24).hex())
 
-# Create sessions directory if it does not exist
+# --- Rate Limiting ---
+RATE_LIMIT_WINDOW = 60  # seconds
+RATE_LIMIT_MAX = 30     # requests per window per IP
+_rate_limits = defaultdict(list)  # ip -> [timestamps]
+
+
+def rate_limit_exceeded(ip):
+    """Check if IP has exceeded rate limit. Returns True if blocked."""
+    now = time.time()
+    # Clean old entries
+    _rate_limits[ip] = [t for t in _rate_limits[ip] if now - t < RATE_LIMIT_WINDOW]
+    if len(_rate_limits[ip]) >= RATE_LIMIT_MAX:
+        return True
+    _rate_limits[ip].append(now)
+    return False
+
+
+# --- Sessions Directory ---
 if not os.path.exists(SESSIONS_DIR):
     os.makedirs(SESSIONS_DIR)
 
-# Allowed local commands (read-only)
-ALLOWED_COMMANDS = {
-    'ls': ['ls', '-la', '-l', '-a', '-R'],
-    'pwd': ['pwd'],
-    'whoami': ['whoami'],
-    'date': ['date'],
-    'df': ['df', 'df -h', 'df -T'],
-    'free': ['free', 'free -h', 'free -m'],
-    'uname': ['uname', 'uname -a'],
-    'ps': ['ps', 'ps aux'],
-    'top': ['top', 'top -n 1'],
-    'cat': ['cat '],  # with file
-    'head': ['head ', 'head -n '],
-    'tail': ['tail ', 'tail -n '],
-    'wc': ['wc ', 'wc -l '],
-    'du': ['du', 'du -sh'],
-    'tree': ['tree', 'tree -L '],
-    'find': ['find . -'],
-    'hostname': ['hostname'],
-    'uptime': ['uptime'],
-    'netstat': ['netstat', 'netstat -tuln'],
-    'ifconfig': ['ifconfig', 'ip addr'],
-    'curl': ['curl '],  # for connectivity check
-    'ping': ['ping -c 4 '],
-}
-
-# Common translations for local commands
-TRANSLATIONS = {
-    # Spanish
-    'es': {
-        'archivos': 'files', 'directorio': 'directory', 'carpeta': 'folder',
-        'actual': 'current', 'mostrar': 'show', 'ver': 'view', 'listar': 'list',
-        'disco': 'disk', 'espacio': 'space', 'almacenamiento': 'storage',
-        'memoria': 'memory', 'ram': 'ram', 'usuario': 'user', 'nombre': 'name',
-        'sistema': 'system', 'computadora': 'computer', 'equipo': 'machine',
-        'info': 'info', 'informacion': 'information', 'cual': 'which',
-        'donde': 'where', 'hay': 'there', 'existen': 'exists',
-        'cuanto': 'how much', 'estado': 'status', 'uso': 'usage',
-        'procesos': 'processes', 'red': 'network', 'conexion': 'connection',
-        'direccion ip': 'ip address', 'nombre del equipo': 'hostname',
-        'tiempo activo': 'uptime', 'desde cuando': 'how long',
-    },
-    # Portuguese
-    'pt': {
-        'arquivos': 'files', 'diretorio': 'directory', 'pasta': 'folder',
-        'atual': 'current', 'mostrar': 'show', 'ver': 'view', 'listar': 'list',
-        'disco': 'disk', 'espaco': 'space', 'memoria': 'memory',
-        'usuario': 'user', 'sistema': 'system', 'computador': 'computer',
-        'info': 'info', 'qual': 'which', 'onde': 'where', 'tem': 'there',
-        'quanto': 'how much', 'rede': 'network', 'conexao': 'connection',
-    },
-    # French
-    'fr': {
-        'fichiers': 'files', 'repertoire': 'directory', 'dossier': 'folder',
-        'actuel': 'current', 'afficher': 'show', 'voir': 'view', 'lister': 'list',
-        'disque': 'disk', 'espace': 'space', 'stockage': 'storage',
-        'memoire': 'memory', 'ram': 'ram', 'utilisateur': 'user',
-        'systeme': 'system', 'ordinateur': 'computer', 'machine': 'machine',
-        'info': 'info', 'information': 'information', 'quel': 'which',
-        'ou': 'where', 'combien': 'how much', 'reseau': 'network',
-    },
-    # German
-    'de': {
-        'dateien': 'files', 'verzeichnis': 'directory', 'ordner': 'folder',
-        'aktuell': 'current', 'anzeigen': 'show', 'zeigen': 'show',
-        'auflisten': 'list', 'festplatte': 'disk', 'speicher': 'space',
-        'speicherplatz': 'storage', 'gedaechtnis': 'memory', 'ram': 'ram',
-        'benutzer': 'user', 'system': 'system', 'computer': 'computer',
-        'info': 'info', 'information': 'information', 'welcher': 'which',
-        'wie viel': 'how much', 'netzwerk': 'network', 'verbindung': 'connection',
-    },
-    # Italian
-    'it': {
-        'file': 'files', 'directory': 'directory', 'cartella': 'folder',
-        'attuale': 'current', 'mostrare': 'show', 'vedere': 'view', 'elenco': 'list',
-        'disco': 'disk', 'spazio': 'space', 'memoria': 'memory', 'ram': 'ram',
-        'utente': 'user', 'sistema': 'system', 'computer': 'computer',
-        'info': 'info', 'informazioni': 'information', 'quale': 'which',
-        'rete': 'network', 'connessione': 'connection',
-    },
-    # Catalan
-    'ca': {
-        'arxius': 'files', 'directori': 'directory', 'carpeta': 'folder',
-        'actual': 'current', 'mostrar': 'show', 'veure': 'view', 'llistar': 'list',
-        'disc': 'disk', 'espai': 'space', 'emmagatzematge': 'storage',
-        'memoria': 'memory', 'ram': 'ram', 'usuari': 'user',
-        'sistema': 'system', 'ordinador': 'computer', 'maquina': 'machine',
-    },
-}
-
-def translate_message(message):
-    """Translate message to English using simple dictionaries"""
-    msg_lower = message.lower()
-
-    # Collect all translations found
-    all_translations = {}
-
-    # Combine all dictionaries
-    for lang, dict_trans in TRANSLATIONS.items():
-        all_translations.update(dict_trans)
-
-    # Sort by length (longest first) to avoid partial replacements
-    sorted_words = sorted(all_translations.keys(), key=len, reverse=True)
-
-    # Apply translations
-    translated = msg_lower
-    for native in sorted_words:
-        english = all_translations[native]
-        # Replace with word boundaries
-        import re
-        pattern = r'\b' + re.escape(native) + r'\b'
-        translated = re.sub(pattern, english, translated)
-
-    return translated
-
-# Patterns that trigger local commands (English and translated)
-LOCAL_CMD_PATTERNS = [
-    # Files/Directory - keywords
-    (r'\b(list|show|get|see|view|display)\b.*\b(files|contents)\b', 'ls -la'),
-    (r'\b(files|contents|archivos|contenido)\b.*\b(directory|folder|here|there|actual|current)\b', 'ls -la'),
-    (r'\b(all files|list files|show files|ver archivos|mostrar archivos|afficher fichiers|voir fichiers|anzeigen|dateien|mostrare file|llistar arxius)\b', 'ls -la'),
-    (r'\b(what.*there|which.*files|cuales.*archivos|quels.*fichiers|welche.*dateien|quali.*file)\b', 'ls -la'),
-
-    # Disk/Space
-    (r'\b(disk|space|storage|disco|espacio|almacenamiento|disque|espace|stockage|festplatte|speicher|speicherplatz|disc|espai|emmagatzematge)\b', 'df -h'),
-    (r'\b(how much|cuanto|cuanta|combien|wie viel|quanto|quanta)\b.*\b(free|available|libre|free)\b', 'df -h'),
-
-    # Memory
-    (r'\b(memory|ram|memoria|gedaechtnis|memoire)\b', 'free -h'),
-    (r'\b(how much|cuanto|cuanta|combien|wie viel|quanto|quanta).*\b(available|free|used)\b', 'free -h'),
-
-    # User
-    (r'\b(who am i|username|user name|quien soy|qui suis-je|wer bin ich|chi sono)\b', 'whoami'),
-
-    # Current directory
-    (r'\b(where|donde|ou|wo|dove).*\b(am i|estoy|suis|bin|sono)\b', 'pwd'),
-    (r'\b(current|present|actual|actuel|aktuell|attuale).*\b(location|place|directory|folder)\b', 'pwd'),
-    (r'\b(pwd|cwd|directorio actual|carpeta actual|repertoire actuel|aktuelles verzeichnis|dove sono)\b', 'pwd'),
-
-    # System info
-    (r'\b(system|computer|machine|sistema|computadora|equipo|systeme|ordinateur|maschine|computer|maquina)\b', 'uname -a'),
-    (r'\b(info|information|details|detalles|informations|details|informazioni|dettagli)\b', 'uname -a'),
-
-    # Uptime
-    (r'\b(uptime|tiempo activo|desde cuando|depuis combien|wie lange|da quanto)\b', 'uptime'),
-
-    # Network/IP
-    (r'\b(ip|network|red|reseau|netzwerk|rete)\b', 'ip addr'),
-
-    # Hostname
-    (r'\b(hostname|computer name|nombre equipo|nom ordinateur|computername|nome computer)\b', 'hostname'),
+# --- Sensitive file paths (block reading these) ---
+SENSITIVE_PATHS = [
+    '/etc/passwd', '/etc/shadow', '/etc/gshadow', '/etc/group',
+    '/etc/ssh/', '/root/.ssh/', '/home/', '/etc/hosts',
+    '/etc/sudoers', '/etc/pam.d/', '/var/log/',
+    '/proc/', '/sys/', '/dev/',
 ]
 
-# Dangerous commands we do NOT allow
+
+def is_sensitive_path(filepath):
+    """Check if filepath points to a sensitive system file."""
+    filepath = os.path.normpath(filepath)
+    for sensitive in SENSITIVE_PATHS:
+        if filepath == sensitive or filepath.startswith(sensitive):
+            return True
+    # Also block any path containing ssh, shadow, passwd, etc.
+    basename = os.path.basename(filepath)
+    blocked_names = {'passwd', 'shadow', 'gshadow', 'sudoers', 'ssh_config',
+                     'id_rsa', 'id_ed25519', 'id_ecdsa', 'authorized_keys',
+                     'known_hosts', '.ssh', '.env', '.gitconfig',
+                     'credentials', '.netrc', '.pgpass'}
+    if basename in blocked_names:
+        return True
+    # Block hidden files in home dir
+    if filepath.startswith(os.path.expanduser('~') + '/.'):
+        # Allow .bashrc, .profile etc but block keys and creds
+        if any(k in filepath for k in ['ssh', 'key', 'credential', 'secret', 'token', 'netrc', 'pgpass']):
+            return True
+    return False
+
+
+# --- Allowed commands (whitelist approach) ---
+SAFE_COMMANDS = {
+    'ls': {'flags': {'-l', '-a', '-la', '-al', '-lh', '-lah', '-R', '-1'},
+            'allow_args': False},
+    'pwd': {'flags': set(), 'allow_args': False},
+    'whoami': {'flags': set(), 'allow_args': False},
+    'date': {'flags': set(), 'allow_args': False},
+    'hostname': {'flags': set(), 'allow_args': False},
+    'uptime': {'flags': set(), 'allow_args': False},
+    'uname': {'flags': {'-a', '-r', '-m', '-s'}, 'allow_args': False},
+    'df': {'flags': {'-h', '-T', '-i', '-ht'}, 'allow_args': False},
+    'free': {'flags': {'-h', '-m', '-g', '-k'}, 'allow_args': False},
+    'ps': {'flags': {'aux', 'auxww', '-ef', 'auxf'}, 'allow_args': False},
+    'du': {'flags': {'-sh', '-h', '-sh', '-ah', '-h', '--max-depth=1'},
+           'allow_args': True},  # du needs a path argument
+    'wc': {'flags': {'-l', '-w', '-c'}, 'allow_args': True},  # wc needs filename
+    'head': {'flags': {'-n'}, 'allow_args': True},  # head needs filename
+    'tail': {'flags': {'-n'}, 'allow_args': True},  # tail needs filename
+    'cat': {'flags': set(), 'allow_args': True},     # cat needs filename
+    'tree': {'flags': {'-L', '-d', '-a'}, 'allow_args': True},
+    'find': {'flags': {'-name', '-type', '-size', '-maxdepth'}, 'allow_args': True},
+    'ip': {'flags': {'addr', 'link', 'route'}, 'allow_args': False},
+    'ping': {'flags': {'-c'}, 'allow_args': True},  # ping needs host
+    'curl': {'flags': {'-s', '-I', '-i', '-L'}, 'allow_args': True},
+    'netstat': {'flags': {'-tuln', '-tln', '-tulnp'}, 'allow_args': False},
+}
+
+
+def validate_command(cmd):
+    """Validate and parse a command. Returns (command_path, args) or None if invalid."""
+    cmd = cmd.strip()
+    if not cmd:
+        return None
+
+    parts = cmd.split()
+    base = parts[0]
+
+    if base not in SAFE_COMMANDS:
+        logger.warning("Rejected command (not in whitelist): %s", cmd)
+        return None
+
+    spec = SAFE_COMMANDS[base]
+    validated_parts = [base]
+
+    i = 1
+    while i < len(parts):
+        part = parts[i]
+        if part.startswith('-'):
+            # It's a flag - check if allowed
+            # Handle combined flags like -la
+            flag = part
+            if flag in spec['flags']:
+                validated_parts.append(flag)
+            elif base == 'ps' and flag == 'aux':
+                validated_parts.append(flag)
+            else:
+                # Check if it's a valid flag that takes an argument (like -n 10)
+                if i + 1 < len(parts) and flag in spec['flags']:
+                    validated_parts.append(flag)
+                    i += 1
+                    validated_parts.append(parts[i])
+                else:
+                    logger.warning("Rejected flag %s for command %s", part, base)
+                    return None
+        elif spec.get('allow_args'):
+            # Check file args for sensitive paths
+            if base in ('cat', 'head', 'tail', 'wc') and is_sensitive_path(part):
+                logger.warning("Blocked access to sensitive path: %s", part)
+                return None
+            validated_parts.append(part)
+        else:
+            logger.warning("Rejected argument %s for command %s", part, base)
+            return None
+        i += 1
+
+    return validated_parts
+
+
+def execute_local_command(cmd):
+    """Execute a validated local command (read-only, no shell)"""
+    import subprocess as sp
+
+    try:
+        cmd = cmd.strip()
+
+        # Danger check
+        if is_dangerous(cmd):
+            logger.warning("Blocked dangerous command: %s", cmd)
+            return "[Security] This command is not allowed."
+
+        # Validate and parse
+        parsed = validate_command(cmd)
+        if parsed is None:
+            return "[Security] This command is not allowed."
+
+        result = sp.run(
+            parsed,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=os.path.expanduser('~')
+        )
+
+        output = result.stdout.strip() or result.stderr.strip() or "Command executed successfully (no output)"
+        logger.info("Executed command: %s", ' '.join(parsed))
+        return output[:5000]
+
+    except sp.TimeoutExpired:
+        return "[Timeout] Command took too long (>10s)"
+    except Exception as e:
+        logger.error("Command execution error: %s", e)
+        return f"[Error] {str(e)}"
+
+
+# Dangerous command patterns (still used as a secondary check)
 BLOCKED_PATTERNS = [
     r'\b(rm|del|delete|rm -rf|mkfs|dd|wipe|destroy|supprimer|entfernen|eliminare)\b',
     r'\b(sudo|su|chmod 777|chown)\b',
@@ -181,6 +204,7 @@ BLOCKED_PATTERNS = [
     r'\b(sql|nmap|nikto|hydra)\b',
 ]
 
+
 def is_dangerous(cmd):
     """Check if the command is dangerous"""
     for pattern in BLOCKED_PATTERNS:
@@ -188,125 +212,118 @@ def is_dangerous(cmd):
             return True
     return False
 
-def detect_local_command(message):
-    """Detect if message asks to execute a local command (multilingual support)"""
-    # First translate to English
-    translated = translate_message(message)
 
-    # Check patterns in translated message
-    for pattern, cmd in LOCAL_CMD_PATTERNS:
-        if re.search(pattern, translated):
-            return cmd
-
-    # Check if it's exactly an allowed command
-    for base_cmd in ALLOWED_COMMANDS.keys():
-        if translated.startswith(base_cmd + ' ') or translated == base_cmd:
-            if is_dangerous(translated):
-                return None
-            return translated
-
-    return None
-
-def execute_local_command(cmd):
-    """Execute a local command (read-only only)"""
-    try:
-        # Normalize command
-        cmd = cmd.strip()
-        if is_dangerous(cmd):
-            return "[Security] This command is not allowed."
-
-        # Execute with timeout
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            cwd=os.path.expanduser('~')
-        )
-
-        output = result.stdout.strip() or result.stderr.strip() or "Command executed successfully (no output)"
-        return output[:5000]  # Limit response to 5000 chars
-
-    except subprocess.TimeoutExpired:
-        return "[Timeout] Command took too long (>10s)"
-    except Exception as e:
-        return f"[Error] {str(e)}"
-
+# --- Ollama Communication ---
 def get_ollama_models():
     """Get list of available models"""
     try:
         import urllib.request
-        req = urllib.request.Request('http://localhost:11434/api/tags')
+        req = urllib.request.Request(f'{OLLAMA_BASE_URL}/api/tags')
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read())
             return [m['name'] for m in data.get('models', [])]
     except Exception as e:
+        logger.error("Failed to get models: %s", e)
         return []
 
-def send_to_ollama(model, messages, tools=None):
-    """Send message to Ollama and return response, with tools support"""
+
+def get_model_info(model_name):
+    """Get model info including context window size"""
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            f'{OLLAMA_BASE_URL}/api/show',
+            data=json.dumps({'name': model_name}).encode('utf-8'),
+            headers={'Content-Type': 'application/json'},
+            method='POST'
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read())
+
+            num_ctx = data.get('num_ctx') or data.get('context_length')
+            model_info = data.get('model_info', {})
+            if not num_ctx:
+                for key in model_info:
+                    if 'context_length' in key.lower():
+                        num_ctx = model_info[key]
+                        break
+
+            return {
+                'model': model_name,
+                'context_length': num_ctx or 4096,
+                'num_ctx': num_ctx or 4096,
+                'model_info': model_info,
+                'details': data.get('details', {}),
+                'size': data.get('size', 0),
+                'modified_at': data.get('modified_at', ''),
+            }
+    except Exception as e:
+        logger.error("Failed to get model info for %s: %s", model_name, e)
+        return {'error': str(e), 'model': model_name}
+
+
+def send_to_ollama(model, messages, tools=None, stream=False):
+    """Send message to Ollama and return response"""
     try:
         import urllib.request
 
         payload = {
             'model': model,
             'messages': messages,
-            'stream': False
+            'stream': stream,
+            'keep_alive': KEEP_ALIVE,
         }
 
-        # Add tools if provided
         if tools:
             payload['tools'] = tools
 
         data = json.dumps(payload).encode('utf-8')
         req = urllib.request.Request(
-            'http://localhost:11434/api/chat',
+            f'{OLLAMA_BASE_URL}/api/chat',
             data=data,
             headers={'Content-Type': 'application/json'}
         )
 
-        # Make request with long timeout for tool calls
-        with urllib.request.urlopen(req, timeout=180) as response:
+        timeout = 300 if stream else 180
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if stream:
+                return response  # Return the response object for streaming
             result = json.loads(response.read())
             return result
     except Exception as e:
+        logger.error("Ollama communication error: %s", e)
         return {'error': str(e)}
+
 
 def process_ollama_response(model, messages, tools=None):
     """Process Ollama response, executing tools if necessary.
     Returns a dict with 'response' and 'prompt_eval_count'."""
-    max_iterations = 2  # Reduced to avoid infinite loops
+    max_iterations = 2
     last_prompt_tokens = 0
 
     for i in range(max_iterations):
-        response = send_to_ollama(model, messages, tools)
+        response = send_to_ollama(model, messages, tools, stream=False)
 
         if 'error' in response:
             return {'response': f"Error: {response['error']}", 'prompt_eval_count': 0}
 
-        # Capture token counts from Ollama response
         last_prompt_tokens = response.get('prompt_eval_count', 0)
-
-        # Get response message
         assistant_msg = response.get('message', {})
         content = assistant_msg.get('content', '')
         tool_calls = assistant_msg.get('tool_calls', [])
 
-        # If no tool calls, return content directly
         if not tool_calls:
             return {'response': content, 'prompt_eval_count': last_prompt_tokens}
 
-        # Process each tool call
+        # Process tool calls
         tool_results = []
         for tool_call in tool_calls:
             func_name = tool_call.get('function', {}).get('name', '')
             func_args = tool_call.get('function', {}).get('arguments', {})
             tool_id = tool_call.get('id', f'tool_{i}')
 
-            print(f"  [TOOL CALL #{i+1}] {func_name} with args: {func_args}")
+            logger.info("Tool call #%d: %s(%s)", i + 1, func_name, json.dumps(func_args))
 
-            # Execute function by name
             if func_name == 'local_command':
                 cmd = func_args.get('command', '')
                 result = execute_local_command(cmd)
@@ -323,11 +340,7 @@ def process_ollama_response(model, messages, tools=None):
                 else:
                     result = "Search results:\n\n"
                     for idx, r in enumerate(results[:5], 1):
-                        result += f"{idx}. {r['title']}\n   URL: {r['url']}\n"
-                        if r.get('full_content'):
-                            result += f"   Content: {r['full_content']}\n\n"
-                        else:
-                            result += f"   {r['snippet']}\n\n"
+                        result += f"{idx}. {r['title']}\n   URL: {r['url']}\n   {r['snippet']}\n\n"
                 tool_results.append({
                     'role': 'tool',
                     'content': result,
@@ -352,26 +365,24 @@ def process_ollama_response(model, messages, tools=None):
                     'tool_call_id': tool_id
                 })
 
-        # Add assistant response
         messages.append({
             'role': 'assistant',
             'content': content,
-            'tool_calls': tool_calls  # Include tool_calls in assistant message
+            'tool_calls': tool_calls
         })
 
-        # Add tool results
         for tr in tool_results:
             messages.append(tr)
 
-        # If there was only one tool call and we processed it, return result directly
         if len(tool_calls) == 1 and content.strip() == '':
-            return {'response': f"Command executed:\n\n{tool_results[0]['content']}", 'prompt_eval_count': last_prompt_tokens}
+            return {'response': f"Command executed:\n\n{tool_results[0]['content']}",
+                    'prompt_eval_count': last_prompt_tokens}
 
-    # If we reached max, return last tool result
-    return {'response': tool_results[-1]['content'] if tool_results else content, 'prompt_eval_count': last_prompt_tokens}
-    return "I couldn't complete the request. Please try a simpler question."
+    return {'response': tool_results[-1]['content'] if tool_results else content,
+            'prompt_eval_count': last_prompt_tokens}
 
-# Ollama tools definition
+
+# --- Ollama Tools Definition ---
 OLLAMA_TOOLS = [
     {
         'type': 'function',
@@ -394,13 +405,13 @@ OLLAMA_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'web_search',
-            'description': 'Search the internet for information. Use this when you need to find current information, news, facts, or answers that require up-to-date data from the web. Returns title, URL, and snippet for each result. IMPORTANT: After searching, always use fetch_article on the most relevant URLs to get full content before answering.',
+            'description': 'Search the internet for information. Returns title, URL, and snippet for each result. Use fetch_article separately to get full content from specific URLs when needed.',
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'query': {
                         'type': 'string',
-                        'description': 'The search query to find information on the internet. Be specific and include key terms.'
+                        'description': 'The search query to find information on the internet.'
                     }
                 },
                 'required': ['query']
@@ -411,7 +422,7 @@ OLLAMA_TOOLS = [
         'type': 'function',
         'function': {
             'name': 'fetch_article',
-            'description': 'Fetch and extract the full text content from a web article URL. Use this after web_search to get detailed content from the most relevant articles before answering the user. Returns the article text content.',
+            'description': 'Fetch and extract the full text content from a web article URL. Use this after web_search to get detailed content from specific articles.',
             'parameters': {
                 'type': 'object',
                 'properties': {
@@ -427,8 +438,9 @@ OLLAMA_TOOLS = [
 ]
 
 
+# --- Web Search & Article Fetching ---
 def web_search(query):
-    """Search the internet using DuckDuckGo (ddgs) and fetch full article content"""
+    """Search the internet using DuckDuckGo (ddgs) - lazy, no auto-fetch"""
     try:
         from ddgs import DDGS
 
@@ -440,15 +452,10 @@ def web_search(query):
                     'url': r.get('href', ''),
                     'snippet': r.get('body', '')[:300]
                 })
-            
-            # Auto-fetch full content from top 3 results
-            for i in range(min(3, len(results))):
-                article = fetch_article(results[i]['url'])
-                if 'content' in article and article['content']:
-                    results[i]['full_content'] = article['content'][:2000]
-            
+            logger.info("Web search for '%s' returned %d results", query, len(results))
             return results
     except Exception as e:
+        logger.error("Web search error: %s", e)
         return [{'error': str(e)}]
 
 
@@ -457,41 +464,51 @@ def fetch_article(url):
     try:
         import urllib.request
         import html as html_mod
+
+        # Block sensitive/local URLs
+        if url.startswith(('file://', 'ftp://')) or 'localhost' in url or '127.0.0.1' in url:
+            return {'url': url, 'error': 'URL not allowed'}
+
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"})
         resp = urllib.request.urlopen(req, timeout=10)
         html_content = resp.read().decode("utf-8", errors="ignore")
-        # Remove scripts, styles, nav, header, footer
+
         for t in ["script", "style", "nav", "header", "footer", "aside", "noscript"]:
-            html_content = re.sub(f"<{t}[^>]*>.*?</{t}>", "", html_content, flags=re.DOTALL|re.IGNORECASE)
-        # Extract paragraphs
-        paragraphs = re.findall(r"<p[^>]*>(.*?)</p>", html_content, re.DOTALL|re.IGNORECASE)
+            html_content = re.sub(f"<{t}[^>]*>.*?</{t}>", "", html_content, flags=re.DOTALL | re.IGNORECASE)
+
+        paragraphs = re.findall(r"<p[^>]*>(.*?)</p>", html_content, re.DOTALL | re.IGNORECASE)
         lines = []
         for p in paragraphs:
             clean = re.sub(r"<[^>]+>", "", p).strip()
             clean = html_mod.unescape(clean)
             if len(clean) > 50:
                 lines.append(clean)
+
         text = "\n".join(lines)
         if not text:
-            # Fallback: extract all text from body
-            body = re.search(r"<body[^>]*>(.*?)</body>", html_content, re.DOTALL|re.IGNORECASE)
+            body = re.search(r"<body[^>]*>(.*?)</body>", html_content, re.DOTALL | re.IGNORECASE)
             if body:
                 text = html_mod.unescape(re.sub(r"<[^>]+>", " ", body.group(1)))
                 text = re.sub(r"\s+", " ", text).strip()[:3000]
         else:
             text = text[:3000]
+
         if text:
+            logger.info("Fetched article from %s (%d chars)", url, len(text))
             return {'url': url, 'content': text}
         return {'url': url, 'error': 'Could not extract content'}
     except Exception as e:
+        logger.error("Article fetch error for %s: %s", url, e)
         return {'url': url, 'error': str(e)}
 
 
+# --- Session Management ---
 def save_session(session_id, data):
     """Save session to JSON file"""
     filepath = os.path.join(SESSIONS_DIR, f"{session_id}.json")
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
 
 def load_session(session_id):
     """Load session from JSON file"""
@@ -501,9 +518,12 @@ def load_session(session_id):
             return json.load(f)
     return None
 
+
 def list_sessions():
     """List all saved sessions"""
     sessions = []
+    if not os.path.exists(SESSIONS_DIR):
+        return sessions
     for filename in os.listdir(SESSIONS_DIR):
         if filename.endswith('.json'):
             session_id = filename[:-5]
@@ -516,90 +536,85 @@ def list_sessions():
                     'created': data.get('created', ''),
                     'messages_count': len(data.get('messages', []))
                 })
-    # Sort by most recent date
     sessions.sort(key=lambda x: x.get('created', ''), reverse=True)
     return sessions
 
+
+# --- Routes ---
 @app.route('/')
 def index():
     """Main page"""
     models = get_ollama_models()
     sessions = list_sessions()
 
-    # Create new session if none exists
     if 'chat_id' not in session:
         import uuid
         session['chat_id'] = str(uuid.uuid4())[:8]
         session['model'] = models[0] if models else 'llama3'
 
     return render_template('index.html',
-                         models=models,
-                         sessions=sessions,
-                         current_model=session.get('model', ''))
+                           models=models,
+                           sessions=sessions,
+                           current_model=session.get('model', ''))
+
 
 @app.route('/api/models')
 def api_models():
     """API to get models"""
     return jsonify(get_ollama_models())
 
+
 @app.route('/api/model-info')
 def api_model_info():
-    """API to get model info including context"""
+    """API to get model info including context window and size"""
     model_name = request.args.get('model', '')
+    if not model_name:
+        return jsonify({'error': 'Model name required'})
+
+    info = get_model_info(model_name)
+
+    # Check if model is currently loaded
     try:
         import urllib.request
-        req = urllib.request.Request(
-            f'http://localhost:11434/api/show',
-            data=json.dumps({'name': model_name}).encode('utf-8'),
-            headers={'Content-Type': 'application/json'},
-            method='POST'
-        )
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read())
+        req = urllib.request.Request(f'{OLLAMA_BASE_URL}/api/ps')
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            ps_data = json.loads(resp.read())
+            loaded_models = [m.get('name', '') for m in ps_data.get('models', [])]
+            # Check if our model name matches (may include :latest suffix)
+            is_loaded = any(model_name == m or model_name + ':latest' == m for m in loaded_models)
+            info['loaded'] = is_loaded
+    except Exception:
+        info['loaded'] = None  # Unknown
 
-            # Search context length in several places
-            num_ctx = data.get('num_ctx') or data.get('context_length')
+    return jsonify(info)
 
-            # Search in model_info (some models put it there)
-            model_info = data.get('model_info', {})
-            if not num_ctx:
-                for key in model_info:
-                    if 'context_length' in key.lower():
-                        num_ctx = model_info[key]
-                        break
 
-            return jsonify({
-                'model': model_name,
-                'context_length': num_ctx or 4096,
-                'num_ctx': num_ctx or 4096,
-                'model_info': model_info,
-                'details': data.get('details', {})
-            })
-    except Exception as e:
-        return jsonify({'error': str(e), 'model': model_name})
-
-@app.route('/api/chat', methods=['POST'])
-def api_chat():
-    """API to send message and receive response"""
+@app.route('/api/chat/stream', methods=['POST'])
+def api_chat_stream():
+    """Streaming chat endpoint using SSE"""
     data = request.json
     user_message = data.get('message', '').strip()
     model = data.get('model', session.get('model', 'llama3'))
     fallback_model = data.get('fallback_model', '')
 
     if not user_message:
-        return jsonify({'error': 'Empty message'})
+        return jsonify({'error': 'Empty message'}), 400
 
-    # Create session if not exists
+    # Rate limit
+    client_ip = request.remote_addr
+    if rate_limit_exceeded(client_ip):
+        logger.warning("Rate limit exceeded for IP: %s", client_ip)
+        return jsonify({'error': 'Rate limit exceeded. Please wait a moment.'}), 429
+
+    # Create/load session
     if 'chat_id' not in session:
         import uuid
         session['chat_id'] = str(uuid.uuid4())[:8]
 
-    # Update model in session
     session['model'] = model
     if fallback_model:
         session['fallback_model'] = fallback_model
 
-    # Load or create session
     session_data = load_session(session['chat_id']) or {
         'model': model,
         'fallback_model': fallback_model,
@@ -608,45 +623,234 @@ def api_chat():
         'messages': []
     }
 
-    # Add user message
     session_data['messages'].append({
         'role': 'user',
         'content': user_message,
         'timestamp': datetime.now().isoformat()
     })
 
-    # Check if it's a local command (simple patterns that always work)
-    local_cmd = detect_local_command(user_message)
+    logger.info("Chat request: model=%s, msg_len=%d, session=%s", model, len(user_message), session['chat_id'])
 
-    if local_cmd:
-        # Execute local command directly (simple patterns)
-        result = execute_local_command(local_cmd)
-        response_text = f"[LOCAL COMMAND: {local_cmd}]\n\n{result}"
+    def generate():
+        full_response = ""
         prompt_tokens = 0
-    else:
-        # Use process_ollama_response which handles native Ollama tools
-        # Try primary model, if fails use fallback
-        result = process_ollama_response(model, session_data['messages'], OLLAMA_TOOLS)
+        try:
+            # Prepare messages for Ollama (strip timestamps for API)
+            api_messages = []
+            for msg in session_data['messages']:
+                api_messages.append({
+                    'role': msg['role'],
+                    'content': msg['content']
+                })
+
+            payload = {
+                'model': model,
+                'messages': api_messages,
+                'stream': True,
+                'keep_alive': KEEP_ALIVE,
+                'tools': OLLAMA_TOOLS,
+            }
+
+            data_bytes = json.dumps(payload).encode('utf-8')
+            req = urllib.request.Request(
+                f'{OLLAMA_BASE_URL}/api/chat',
+                data=data_bytes,
+                headers={'Content-Type': 'application/json'}
+            )
+
+            import urllib.request
+            with urllib.request.urlopen(req, timeout=300) as response:
+                tool_calls_buffer = []
+                current_tool_call = None
+
+                for line in response:
+                    line = line.decode('utf-8').strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if chunk.get('done'):
+                        # Capture eval counts
+                        prompt_tokens = chunk.get('prompt_eval_count', 0)
+                        eval_count = chunk.get('eval_count', 0)
+
+                        # If we have pending tool calls, process them
+                        if tool_calls_buffer:
+                            # Process tool calls synchronously
+                            _process_tool_calls_streaming(
+                                model, session_data, tool_calls_buffer,
+                                full_response, prompt_tokens
+                            )
+                        break
+
+                    msg = chunk.get('message', {})
+
+                    # Handle tool calls in streaming
+                    if msg.get('tool_calls'):
+                        for tc in msg['tool_calls']:
+                            tool_calls_buffer.append(tc)
+                        continue
+
+                    content = msg.get('content', '')
+                    if content:
+                        full_response += content
+                        # Send SSE event
+                        sse_data = json.dumps({'type': 'token', 'content': content})
+                        yield f"data: {sse_data}\n\n"
+
+                # If response was empty and no tool calls, try fallback
+                if not full_response and not tool_calls_buffer:
+                    if fallback_model and fallback_model != model:
+                        logger.info("Primary model '%s' empty response, trying fallback '%s'", model, fallback_model)
+                        payload['model'] = fallback_model
+                        data_bytes = json.dumps(payload).encode('utf-8')
+                        req2 = urllib.request.Request(
+                            f'{OLLAMA_BASE_URL}/api/chat',
+                            data=data_bytes,
+                            headers={'Content-Type': 'application/json'}
+                        )
+                        with urllib.request.urlopen(req2, timeout=300) as response2:
+                            for line in response2:
+                                line = line.decode('utf-8').strip()
+                                if not line:
+                                    continue
+                                try:
+                                    chunk = json.loads(line)
+                                except json.JSONDecodeError:
+                                    continue
+                                if chunk.get('done'):
+                                    prompt_tokens = chunk.get('prompt_eval_count', 0)
+                                    break
+                                content = chunk.get('message', {}).get('content', '')
+                                if content:
+                                    full_response += content
+                                    sse_data = json.dumps({'type': 'token', 'content': content})
+                                    yield f"data: {sse_data}\n\n"
+
+        except Exception as e:
+            logger.error("Streaming error: %s", e)
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+            return
+
+        # Save session
+        session_data['messages'].append({
+            'role': 'assistant',
+            'content': full_response,
+            'timestamp': datetime.now().isoformat()
+        })
+        save_session(session['chat_id'], session_data)
+
+        # Send completion event
+        yield f"data: {json.dumps({'type': 'done', 'context_usage': prompt_tokens})}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+def _process_tool_calls_streaming(model, session_data, tool_calls, current_content, prompt_tokens):
+    """Process tool calls from streaming - used internally"""
+    # This is called after streaming completes with tool calls
+    # For now, we execute tools and make a non-streaming follow-up
+    tool_results = []
+    for i, tool_call in enumerate(tool_calls):
+        func_name = tool_call.get('function', {}).get('name', '')
+        func_args = tool_call.get('function', {}).get('arguments', {})
+        tool_id = tool_call.get('id', f'tool_{i}')
+
+        logger.info("Stream tool call: %s(%s)", func_name, json.dumps(func_args))
+
+        if func_name == 'local_command':
+            cmd = func_args.get('command', '')
+            result = execute_local_command(cmd)
+            tool_results.append({'role': 'tool', 'content': result, 'tool_call_id': tool_id})
+        elif func_name == 'web_search':
+            query = func_args.get('query', '')
+            results = web_search(query)
+            if results and isinstance(results, list) and 'error' in results[0]:
+                result = f"Search error: {results[0]['error']}"
+            else:
+                result = "Search results:\n\n"
+                for idx, r in enumerate(results[:5], 1):
+                    result += f"{idx}. {r['title']}\n   URL: {r['url']}\n   {r['snippet']}\n\n"
+            tool_results.append({'role': 'tool', 'content': result, 'tool_call_id': tool_id})
+        elif func_name == 'fetch_article':
+            url = func_args.get('url', '')
+            article = fetch_article(url)
+            if 'content' in article:
+                result = f"Article from {url}:\n\n{article['content']}"
+            else:
+                result = f"Could not fetch article from {url}: {article.get('error', 'Unknown error')}"
+            tool_results.append({'role': 'tool', 'content': result, 'tool_call_id': tool_id})
+        else:
+            tool_results.append({'role': 'tool', 'content': f"Unknown tool: {func_name}", 'tool_call_id': tool_id})
+
+    return tool_results
+
+
+@app.route('/api/chat', methods=['POST'])
+def api_chat():
+    """API to send message and receive response (non-streaming fallback)"""
+    data = request.json
+    user_message = data.get('message', '').strip()
+    model = data.get('model', session.get('model', 'llama3'))
+    fallback_model = data.get('fallback_model', '')
+
+    if not user_message:
+        return jsonify({'error': 'Empty message'})
+
+    # Rate limit
+    client_ip = request.remote_addr
+    if rate_limit_exceeded(client_ip):
+        logger.warning("Rate limit exceeded for IP: %s", client_ip)
+        return jsonify({'error': 'Rate limit exceeded. Please wait a moment.'}), 429
+
+    if 'chat_id' not in session:
+        import uuid
+        session['chat_id'] = str(uuid.uuid4())[:8]
+
+    session['model'] = model
+    if fallback_model:
+        session['fallback_model'] = fallback_model
+
+    session_data = load_session(session['chat_id']) or {
+        'model': model,
+        'fallback_model': fallback_model,
+        'title': user_message[:50] + ('...' if len(user_message) > 50 else ''),
+        'created': datetime.now().isoformat(),
+        'messages': []
+    }
+
+    session_data['messages'].append({
+        'role': 'user',
+        'content': user_message,
+        'timestamp': datetime.now().isoformat()
+    })
+
+    logger.info("Chat request: model=%s, msg_len=%d, session=%s", model, len(user_message), session['chat_id'])
+
+    # Use Ollama tools (no regex-based command detection)
+    result = process_ollama_response(model, session_data['messages'], OLLAMA_TOOLS)
+    response_text = result.get('response', '') if isinstance(result, dict) else result
+    prompt_tokens = result.get('prompt_eval_count', 0) if isinstance(result, dict) else 0
+
+    # Fallback model
+    if (response_text.startswith('Error:') or response_text.startswith('[ERROR]')) and fallback_model and fallback_model != model:
+        logger.info("Primary model '%s' failed, trying fallback '%s'", model, fallback_model)
+        result = process_ollama_response(fallback_model, session_data['messages'], OLLAMA_TOOLS)
         response_text = result.get('response', '') if isinstance(result, dict) else result
         prompt_tokens = result.get('prompt_eval_count', 0) if isinstance(result, dict) else 0
+        if not response_text.startswith('Error:') and not response_text.startswith('[ERROR]'):
+            response_text = f"[Fallback: {fallback_model}]\n\n{response_text}"
 
-        # If error and there's a fallback, try with fallback
-        if response_text.startswith('[ERROR]') and fallback_model and fallback_model != model:
-            print(f"Primary model '{model}' failed, trying fallback '{fallback_model}'")
-            result = process_ollama_response(fallback_model, session_data['messages'], OLLAMA_TOOLS)
-            response_text = result.get('response', '') if isinstance(result, dict) else result
-            prompt_tokens = result.get('prompt_eval_count', 0) if isinstance(result, dict) else 0
-            if not response_text.startswith('[ERROR]'):
-                response_text = f"[Fallback: {fallback_model}]\n\n{response_text}"
-
-    # Add response
     session_data['messages'].append({
         'role': 'assistant',
         'content': response_text,
         'timestamp': datetime.now().isoformat()
     })
 
-    # Save session
     save_session(session['chat_id'], session_data)
 
     return jsonify({
@@ -655,10 +859,12 @@ def api_chat():
         'context_usage': prompt_tokens
     })
 
+
 @app.route('/api/sessions')
 def api_sessions():
     """API to list all sessions"""
     return jsonify(list_sessions())
+
 
 @app.route('/api/session/<session_id>')
 def api_session_get(session_id):
@@ -667,6 +873,7 @@ def api_session_get(session_id):
     if data:
         return jsonify(data)
     return jsonify({'error': 'Session not found'})
+
 
 @app.route('/api/session/delete', methods=['POST'])
 def api_session_delete():
@@ -677,9 +884,11 @@ def api_session_delete():
     filepath = os.path.join(SESSIONS_DIR, f"{session_id}.json")
     if os.path.exists(filepath):
         os.remove(filepath)
+        logger.info("Deleted session: %s", session_id)
         return jsonify({'success': True})
 
     return jsonify({'error': 'Session not found'})
+
 
 @app.route('/api/session/rename', methods=['POST'])
 def api_session_rename():
@@ -698,9 +907,11 @@ def api_session_rename():
         session_data['title'] = new_title
         with open(filepath, 'w') as f:
             json.dump(session_data, f, indent=2)
+        logger.info("Renamed session %s to '%s'", session_id, new_title)
         return jsonify({'success': True})
 
     return jsonify({'error': 'Session not found'})
+
 
 @app.route('/api/session/new', methods=['POST'])
 def api_session_new():
@@ -708,7 +919,6 @@ def api_session_new():
     import uuid
     session['chat_id'] = str(uuid.uuid4())[:8]
 
-    # Clear session data
     session_data = {
         'model': session.get('model', 'llama3'),
         'title': 'New conversation',
@@ -722,15 +932,30 @@ def api_session_new():
         'title': session_data['title']
     })
 
+
+@app.route('/api/clear-all-sessions', methods=['DELETE'])
+def api_clear_all():
+    """Delete all sessions"""
+    count = 0
+    for filename in os.listdir(SESSIONS_DIR):
+        if filename.endswith('.json'):
+            os.remove(os.path.join(SESSIONS_DIR, filename))
+            count += 1
+    logger.info("Cleared all sessions (%d deleted)", count)
+    return jsonify({'success': True, 'deleted': count})
+
+
 if __name__ == '__main__':
-    # Create sessions directory if not exists
     if not os.path.exists(SESSIONS_DIR):
         os.makedirs(SESSIONS_DIR)
 
     print("=" * 50)
     print("Ollama WebChat")
     print("=" * 50)
-    print("Open: http://localhost:5000")
+    print(f"Open: http://localhost:5000")
+    print(f"Debug: {DEBUG}")
+    print(f"Sessions: {SESSIONS_DIR}")
+    print(f"Ollama: {OLLAMA_BASE_URL}")
     print("=" * 50)
 
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=DEBUG)
