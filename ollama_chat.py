@@ -684,10 +684,29 @@ def api_chat_stream():
                         # If we have pending tool calls, process them
                         if tool_calls_buffer:
                             # Process tool calls synchronously
-                            _process_tool_calls_streaming(
+                            tool_results = _process_tool_calls_streaming(
                                 model, session_data, tool_calls_buffer,
                                 full_response, prompt_tokens
                             )
+                            # Send tool results back to Ollama for final response
+                            followup_messages = []
+                            for msg in session_data['messages']:
+                                followup_messages.append({'role': msg['role'], 'content': msg['content']})
+                            # Add assistant message with tool calls
+                            followup_messages.append({'role': 'assistant', 'content': full_response or '', 'tool_calls': tool_calls_buffer})
+                            # Add tool results
+                            for tr in tool_results:
+                                followup_messages.append({'role': tr['role'], 'content': tr['content']})
+
+                            # Make non-streaming follow-up request
+                            followup_result = send_to_ollama(model, followup_messages, OLLAMA_TOOLS, stream=False)
+                            if 'error' in followup_result:
+                                full_response = f"Error: {followup_result['error']}"
+                            else:
+                                followup_content = followup_result.get('message', {}).get('content', '')
+                                if followup_content:
+                                    full_response = followup_content
+                                prompt_tokens = followup_result.get('prompt_eval_count', prompt_tokens)
                         break
 
                     msg = chunk.get('message', {})
