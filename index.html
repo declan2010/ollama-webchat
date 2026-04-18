@@ -1142,6 +1142,7 @@
 
                     if (data.success) {
                         if (sessionId === currentSessionId) {
+                            // Server already cleared the session, just create new
                             newChat();
                         } else {
                             loadSessions();
@@ -1212,6 +1213,13 @@
 
         async function switchSession(sessionId) {
             try {
+                // Sync server-side session first
+                await fetch('/api/session/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+
                 const response = await fetch(`/api/session/${sessionId}`);
                 const data = await response.json();
 

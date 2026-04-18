@@ -651,6 +651,8 @@ def api_chat_stream():
                 'tools': OLLAMA_TOOLS,
             }
 
+            import urllib.request
+
             data_bytes = json.dumps(payload).encode('utf-8')
             req = urllib.request.Request(
                 f'{OLLAMA_BASE_URL}/api/chat',
@@ -658,7 +660,6 @@ def api_chat_stream():
                 headers={'Content-Type': 'application/json'}
             )
 
-            import urllib.request
             with urllib.request.urlopen(req, timeout=300) as response:
                 tool_calls_buffer = []
                 current_tool_call = None
@@ -885,7 +886,25 @@ def api_session_delete():
     if os.path.exists(filepath):
         os.remove(filepath)
         logger.info("Deleted session: %s", session_id)
+        # If the deleted session is the current one, clear it
+        if session.get('chat_id') == session_id:
+            session.pop('chat_id', None)
         return jsonify({'success': True})
+
+    return jsonify({'error': 'Session not found'})
+
+
+@app.route('/api/session/switch', methods=['POST'])
+def api_session_switch():
+    """API to switch to an existing session (sync server-side session)"""
+    data = request.json
+    session_id = data.get('session_id', '')
+
+    filepath = os.path.join(SESSIONS_DIR, f"{session_id}.json")
+    if os.path.exists(filepath):
+        session['chat_id'] = session_id
+        logger.info("Switched to session: %s", session_id)
+        return jsonify({'success': True, 'session_id': session_id})
 
     return jsonify({'error': 'Session not found'})
 
