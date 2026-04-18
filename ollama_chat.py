@@ -573,7 +573,7 @@ def api_model_info():
 
     info = get_model_info(model_name)
 
-    # Check if model is currently loaded
+    # Check if model is currently loaded (local models only - cloud models are always available)
     try:
         import urllib.request
         req = urllib.request.Request(f'{OLLAMA_BASE_URL}/api/ps')
@@ -582,6 +582,9 @@ def api_model_info():
             loaded_models = [m.get('name', '') for m in ps_data.get('models', [])]
             # Check if our model name matches (may include :latest suffix)
             is_loaded = any(model_name == m or model_name + ':latest' == m for m in loaded_models)
+            # Cloud models are always available but won't appear in /api/ps
+            if not is_loaded and ':cloud' in model_name:
+                is_loaded = True
             info['loaded'] = is_loaded
     except Exception:
         info['loaded'] = None  # Unknown

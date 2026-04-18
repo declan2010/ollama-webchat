@@ -1018,9 +1018,14 @@
                     badge.style.display = 'none';
                 }
 
-                if (info.size) {
-                    const sizeMB = Math.round(info.size / (1024 * 1024));
+                // Show model size if available
+                const sizeBytes = info.size || 0;
+                const paramSize = info.details?.parameter_size || info.parameter_size || '';
+                if (sizeBytes > 0) {
+                    const sizeMB = Math.round(sizeBytes / (1024 * 1024));
                     badge.textContent += ` ${sizeMB > 1024 ? (sizeMB / 1024).toFixed(1) + 'GB' : sizeMB + 'MB'}`;
+                } else if (paramSize) {
+                    badge.textContent += ` ${paramSize}`;
                 }
             } catch (e) {
                 badge.style.display = 'none';
