@@ -1035,6 +1035,23 @@
         modelSelect.addEventListener('change', function() {
             updateContextIndicator(0);
             checkModelStatus();
+            // Save model to current session
+            if (currentSessionId) {
+                fetch(`/api/session/${currentSessionId}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        data.model = modelSelect.value;
+                        // Save fallback model too
+                        if (fallbackModelSelect) {
+                            data.fallback_model = fallbackModelSelect.value;
+                        }
+                        fetch(`/api/session/save`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ session_id: currentSessionId, data: data })
+                        });
+                    });
+            }
         });
 
         // Load theme from localStorage

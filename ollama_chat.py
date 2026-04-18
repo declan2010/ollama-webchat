@@ -1046,6 +1046,31 @@ def api_session_rename():
     return jsonify({'error': 'Session not found'})
 
 
+@app.route('/api/session/save', methods=['POST'])
+def api_session_save():
+    """API to save session data (model, fallback_model, etc.)"""
+    data = request.json
+    session_id = data.get('session_id', '')
+    session_data = data.get('data', {})
+
+    if not session_id:
+        return jsonify({'error': 'Session ID required'})
+
+    filepath = os.path.join(SESSIONS_DIR, f"{session_id}.json")
+    if os.path.exists(filepath):
+        # Merge: update only the fields provided
+        with open(filepath, 'r') as f:
+            existing = json.load(f)
+        for key in ('model', 'fallback_model', 'context_usage'):
+            if key in session_data:
+                existing[key] = session_data[key]
+        with open(filepath, 'w') as f:
+            json.dump(existing, f, indent=2)
+        return jsonify({'success': True})
+
+    return jsonify({'error': 'Session not found'})
+
+
 @app.route('/api/session/new', methods=['POST'])
 def api_session_new():
     """API to create a new session"""
