@@ -848,6 +848,8 @@ def api_chat_stream():
             'content': full_response,
             'timestamp': datetime.now().isoformat()
         })
+        # Save context usage in session for per-conversation display
+        session_data['context_usage'] = prompt_tokens
         save_session(current_chat_id, session_data)
 
         # Send completion event
@@ -960,7 +962,7 @@ def api_chat():
         'content': response_text,
         'timestamp': datetime.now().isoformat()
     })
-
+    session_data['context_usage'] = prompt_tokens
     save_session(current_chat_id, session_data)
 
     return jsonify({

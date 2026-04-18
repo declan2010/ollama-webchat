@@ -1142,8 +1142,16 @@
 
                     if (data.success) {
                         if (sessionId === currentSessionId) {
-                            // Server already cleared the session, just create new
-                            newChat();
+                            // Clear current session, show welcome
+                            currentSessionId = null;
+                            updateContextIndicator(0);
+                            chatArea.innerHTML = `
+                                <div class="welcome-message">
+                                    <h2>Conversation deleted</h2>
+                                    <p>Click "+ New Chat" to start a new conversation.</p>
+                                </div>
+                            `;
+                            loadSessions();
                         } else {
                             loadSessions();
                         }
@@ -1195,6 +1203,7 @@
                 const data = await response.json();
 
                 currentSessionId = data.session_id;
+                updateContextIndicator(0);
 
                 chatArea.innerHTML = `
                     <div class="welcome-message">
@@ -1229,6 +1238,14 @@
                 }
 
                 currentSessionId = sessionId;
+
+                // Restore context usage for this conversation
+                if (data.context_usage !== undefined) {
+                    updateContextIndicator(data.context_usage);
+                } else {
+                    // New conversation, reset context
+                    updateContextIndicator(0);
+                }
 
                 if (data.model) modelSelect.value = data.model;
                 if (data.fallback_model && fallbackModelSelect) {
