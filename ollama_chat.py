@@ -1,5 +1,5 @@
 """
-Ollama WebChat - Web chat for local Ollama models
+OllamaAgent - Web Agent for local Ollama models
 Allows chatting with local models, selecting models, and saving sessions.
 """
 
@@ -25,7 +25,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s'
 )
-logger = logging.getLogger('ollama-chat')
+logger = logging.getLogger('ollama-agent')
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', os.urandom(24).hex())

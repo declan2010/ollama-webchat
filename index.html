@@ -793,7 +793,8 @@
 <body>
     <div class="sidebar">
         <div class="sidebar-header">
-            <h1>🦙 OllamaChat</h1>
+            <h1>🤖 OllamaAgent</h1>
+            <span style="font-size: 0.7em; color: var(--text-secondary); margin-left: 8px;">by Declan2010</span>
             <p>Local AI Models</p>
         </div>
 
@@ -837,7 +838,7 @@
 
         <div class="chat-area" id="chatArea">
             <div class="welcome-message">
-                <h2>Welcome to OllamaChat</h2>
+                <h2>Welcome to OllamaAgent</h2>
                 <p>Select a model and start chatting</p>
                 <p style="font-size: 0.85rem;">Messages are saved automatically</p>
             </div>
@@ -983,14 +984,14 @@
 
         // Load saved preferences
         function loadPreferences() {
-            const savedFallback = localStorage.getItem('ollama-chat-fallback');
+            const savedFallback = localStorage.getItem('ollama-agent-fallback');
             if (savedFallback) {
                 fallbackModelSelect.value = savedFallback;
             }
         }
 
         fallbackModelSelect.addEventListener('change', function() {
-            localStorage.setItem('ollama-chat-fallback', this.value);
+            localStorage.setItem('ollama-agent-fallback', this.value);
         });
 
         // Update context indicator with visual bar
@@ -1081,7 +1082,7 @@
 
         // Load theme from localStorage
         function loadTheme() {
-            const theme = localStorage.getItem('ollama-chat-theme') || 'dark';
+            const theme = localStorage.getItem('ollama-agent-theme') || 'dark';
             setTheme(theme);
         }
 
@@ -1091,7 +1092,7 @@
             } else {
                 document.body.classList.remove('light-theme');
             }
-            localStorage.setItem('ollama-chat-theme', theme);
+            localStorage.setItem('ollama-agent-theme', theme);
 
             document.getElementById('darkThemeBtn').classList.toggle('active', theme === 'dark');
             document.getElementById('lightThemeBtn').classList.toggle('active', theme === 'light');
