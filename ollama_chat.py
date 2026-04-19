@@ -820,14 +820,23 @@ def api_chat_stream():
                     if msg.get('tool_calls'):
                         for tc in msg['tool_calls']:
                             tool_calls_buffer.append(tc)
+                        # Don't show content if we have tool calls (it's usually just the tool name)
                         continue
 
                     content = msg.get('content', '')
                     if content:
-                        full_response += content
-                        # Send SSE event
-                        sse_data = json.dumps({'type': 'token', 'content': content})
-                        yield f"data: {sse_data}\n\n"
+                        # If tool calls are being collected, suppress content display
+                        # (models sometimes emit tool names as text before the formal tool call)
+                        if not tool_calls_buffer:
+                            # Filter out tool call artifacts that some models emit as text
+                            import re
+                            if re.match(r'^[\w.-]+:tool_call\s*$', content.strip()):
+                                full_response += ''
+                                continue
+                            full_response += content
+                            # Send SSE event
+                            sse_data = json.dumps({'type': 'token', 'content': content})
+                            yield f"data: {sse_data}\n\n"
 
                 # If response was empty and no tool calls, try fallback
                 if not full_response and not tool_calls_buffer:
