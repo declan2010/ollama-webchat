@@ -877,15 +877,23 @@ def api_chat_stream():
 
                             # If there are write commands needing permission, ask for ALL at once
                             if write_cmds_to_request:
+                                logger.info("Sending %d write permission requests", len(write_cmds_to_request))
                                 for item in write_cmds_to_request:
+                                    logger.info("  Write perm SSE: cmd=%s perm_id=%s", item['cmd'], item['perm_id'])
                                     yield f"data: {json.dumps({'type': 'write_permission_required', 'command': item['cmd'], 'session_id': current_chat_id, 'perm_id': item['perm_id']})}\n\n"
                                 # Wait for ALL permission responses (they come async from frontend)
+                                # Timeout after 120 seconds
                                 actions = {}
                                 for item in write_cmds_to_request:
                                     perm_id = item['perm_id']
-                                    action = _pending_permissions[perm_id]['q'].get()  # blocks
+                                    try:
+                                        action = _pending_permissions[perm_id]['q'].get(timeout=120)
+                                    except queue.Empty:
+                                        logger.warning("Write permission timed out for %s", item['cmd'])
+                                        action = 'deny'
                                     actions[perm_id] = action
-                                    del _pending_permissions[perm_id]
+                                    if perm_id in _pending_permissions:
+                                        del _pending_permissions[perm_id]
 
                                 # Apply all permission actions
                                 for item in write_cmds_to_request:
@@ -1175,6 +1183,17 @@ def api_chat_stream():
         session_data['context_usage'] = prompt_tokens
         save_session(current_chat_id, session_data)
 
+        # Detect if the response contains code that should be written to a file
+        # (when the model generates code instead of using the local_command tool)
+        code_blocks = re.findall(r'```(\w+)?\n(.*?)```', full_response, re.DOTALL)
+        if code_blocks and not tool_calls_buffer:
+            # Model generated code as text instead of using tools
+            # Offer to save via frontend notification
+            for lang, code in code_blocks:
+                if lang in ('html', 'htm', 'javascript', 'js', 'css', 'python', 'py', 'php', 'sh', 'bash'):
+                    yield f"data: {json.dumps({'type': 'code_save_offer', 'language': lang, 'code': code.strip()})}\n\n"
+                    break  # Only offer once
+
         # Send completion event
         yield f"data: {json.dumps({'type': 'done', 'context_usage': prompt_tokens})}\n\n"
 
@@ -1397,6 +1416,35 @@ def api_session_save():
         return jsonify({'success': True})
 
     return jsonify({'error': 'Session not found'})
+
+
+@app.route('/api/save-code', methods=['POST'])
+def api_save_code():
+    """API to save code to a file"""
+    data = request.json
+    filepath = data.get('filepath', '')
+    content = data.get('content', '')
+    session_id = data.get('session_id', '')
+
+    if not filepath or not content:
+        return jsonify({'error': 'Filepath and content required'})
+
+    if '..' in filepath or filepath.startswith('/etc') or filepath.startswith('/usr'):
+        return jsonify({'error': 'Invalid filepath'})
+
+    try:
+        perm = check_write_permission(f'write {filepath}', session_id)
+        if perm == 'ask':
+            return jsonify({'error': 'write_permission_required', 'command': f'Write to {filepath}', 'filepath': filepath})
+
+        os.makedirs(os.path.dirname(filepath) if os.path.dirname(filepath) else '.', exist_ok=True)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(content)
+        logger.info("Saved code to: %s", filepath)
+        return jsonify({'success': True, 'filepath': filepath})
+    except Exception as e:
+        logger.error("Error saving code: %s", e)
+        return jsonify({'error': str(e)})
 
 
 @app.route('/api/session/new', methods=['POST'])

@@ -1114,6 +1114,33 @@
             document.getElementById('writePermissionModal').classList.add('active');
         }
 
+        async function saveCodeToFile(btn) {
+            const code = btn.dataset.code;
+            const filepath = btn.parentElement.querySelector('#saveCodePath').value;
+            btn.textContent = '⏳ Saving...';
+            btn.disabled = true;
+            try {
+                const resp = await fetch('/api/save-code', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filepath: filepath, content: code, session_id: currentSessionId })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    btn.textContent = '✅ Saved!';
+                    btn.style.background = '#16a34a';
+                } else if (data.error === 'write_permission_required') {
+                    btn.textContent = '❌ Need permission';
+                    showWritePermissionModal(data.command, currentSessionId, '');
+                } else {
+                    btn.textContent = '❌ Error';
+                    btn.title = data.error;
+                }
+            } catch (e) {
+                btn.textContent = '❌ Failed';
+            }
+        }
+
         async function handleWritePermission(action) {
             const { command, sessionId, permId } = pendingWritePermission;
             document.getElementById('writePermissionModal').classList.remove('active');
@@ -1485,7 +1512,24 @@
                                 }
                             } else if (data.type === 'write_permission_required') {
                                 // Show write permission modal
+                                console.log('[WRITE PERM] Received permission request:', data.command, 'perm_id:', data.perm_id);
                                 showWritePermissionModal(data.command, data.session_id, data.perm_id || '');
+                            } else if (data.type === 'code_save_offer') {
+                                // Model generated code as text - offer to save it
+                                const lastMsg = chatArea.querySelector('.message:last-child .message-content');
+                                if (lastMsg) {
+                                    const saveBar = document.createElement('div');
+                                    saveBar.className = 'code-save-bar';
+                                    saveBar.style.cssText = 'margin-top:10px;padding:10px;background:var(--sidebar-bg);border-radius:8px;display:flex;gap:8px;align-items:center;';
+                                    saveBar.innerHTML = `
+                                        <span style="flex:1;color:var(--text-secondary);font-size:0.85rem;">💾 The model generated ${data.language} code. Save to file?</span>
+                                        <input type="text" id="saveCodePath" value="/home/cvc1/output.${data.language === 'javascript' ? 'js' : data.language === 'python' ? 'py' : data.language}" style="flex:2;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:0.85rem;">
+                                        <button onclick="saveCodeToFile(this)" style="padding:6px 16px;border:none;border-radius:4px;background:#22c55e;color:white;cursor:pointer;font-weight:bold;">💾 Save</button>
+                                    `;
+                                    // Store code data on the button
+                                    saveBar.querySelector('button').dataset.code = data.code;
+                                    lastMsg.appendChild(saveBar);
+                                }
                             } else if (data.type === 'error') {
                                 fullResponse += `\n\n**Error:** ${data.content}`;
                                 if (contentEl) {
