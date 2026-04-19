@@ -960,12 +960,21 @@ def api_chat_stream():
                                     if tool_summaries:
                                         context_hint = f'\n\nHere are the search results I found:\n"""\n{"---".join(tool_summaries)}\n"""\n\nPlease provide a complete answer based on this information.'
                                     followup_messages.append({'role': 'assistant', 'content': followup_content})
-                                    final_result = send_to_ollama(model, followup_messages, None, stream=False)
-                                    final_content = final_result.get('message', {}).get('content', '')
-                                    if final_content:
-                                        full_response = final_content
+                                    try:
+                                        final_result = send_to_ollama(model, followup_messages, None, stream=False)
+                                        final_content = final_result.get('message', {}).get('content', '')
+                                        if final_content:
+                                            full_response = final_content
+                                            yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
+                                            prompt_tokens = final_result.get('prompt_eval_count', prompt_tokens)
+                                        else:
+                                            # Model returned empty, send partial content
+                                            full_response = followup_content
+                                            yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
+                                    except Exception as e:
+                                        logger.error("Forced final response failed: %s", e)
+                                        full_response = followup_content
                                         yield f"data: {json.dumps({'type': 'token', 'content': full_response})}\n\n"
-                                        prompt_tokens = final_result.get('prompt_eval_count', prompt_tokens)
                                     break
 
                                 elif followup_tool_calls and tools_for_this_round is not None:

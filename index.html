@@ -1288,6 +1288,15 @@
                 currentSessionId = data.session_id;
                 updateContextIndicator(0);
 
+                // Save current model selection to the new session
+                if (modelSelect.value) {
+                    fetch(`/api/session/save`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ session_id: currentSessionId, data: { model: modelSelect.value, fallback_model: fallbackModelSelect ? fallbackModelSelect.value : '' } })
+                    });
+                }
+
                 chatArea.innerHTML = `
                     <div class="welcome-message">
                         <h2>New Conversation</h2>
