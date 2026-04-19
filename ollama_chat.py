@@ -785,10 +785,18 @@ def api_chat_stream():
                                     # No content and no tool calls (or tools disabled), or tool calls but tools disabled
                                     # Retry without tools to force text response
                                     if followup_tool_calls and tools_for_this_round is None:
-                                        logger.info("Model requested tools but they're disabled, retrying without tool_calls in history")
+                                        logger.info("Model requested tools but they're disabled, retrying with tool results as context")
                                         # Remove the last assistant message with tool_calls and add a simple one
                                         followup_messages = [m for m in followup_messages if not (m.get('tool_calls'))]
-                                        followup_messages.append({'role': 'assistant', 'content': 'I have gathered the following information. Let me provide a comprehensive answer based on what I found.'})
+                                        # Collect all tool results from followup_messages for context
+                                        tool_summaries = []
+                                        for m in followup_messages:
+                                            if m.get('role') == 'tool' and m.get('content'):
+                                                tool_summaries.append(m['content'])
+                                        context_hint = ''
+                                        if tool_summaries:
+                                            context_hint = f'\n\nI found the following information:\n"""\n{"---".join(tool_summaries)}\n"""\n\nBased on this information, please provide a clear answer to the user.'
+                                        followup_messages.append({'role': 'assistant', 'content': f'I have gathered the information needed.{context_hint}'})
                                         followup_result2 = send_to_ollama(model, followup_messages, None, stream=False)
                                         content2 = followup_result2.get('message', {}).get('content', '')
                                         if content2:
@@ -802,7 +810,15 @@ def api_chat_stream():
                             else:
                                 # Max rounds reached - force final response without tools
                                 logger.info("Max follow-up rounds reached, forcing text response")
-                                followup_messages.append({'role': 'assistant', 'content': 'Based on the search results I found, here is my summary:'})
+                                # Include tool results in the prompt
+                                tool_summaries = []
+                                for m in followup_messages:
+                                    if m.get('role') == 'tool' and m.get('content'):
+                                        tool_summaries.append(m['content'])
+                                context_hint = ''
+                                if tool_summaries:
+                                    context_hint = f'\n\nI found the following information:\n"""\n{"---".join(tool_summaries)}\n"""'
+                                followup_messages.append({'role': 'assistant', 'content': f'Based on the search results, here is my answer:{context_hint}'})
                                 final_result = send_to_ollama(model, followup_messages, None, stream=False)
                                 final_content = final_result.get('message', {}).get('content', '')
                                 if final_content:
