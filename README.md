@@ -76,6 +76,41 @@ ollamaAgent/
 - Write commands (touch, cp, mv, etc.) auto-execute with notification
 - No authentication by default (add reverse proxy for production)
 
+## Platform Compatibility
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **Linux** | ✅ Fully supported | Native support, runs as-is |
+| **macOS** | ✅ Fully supported | Same as Linux, no changes needed |
+| **Windows** | ⚠️ Requires WSL2 | See below |
+
+### Running on Windows
+
+OllamaAgent uses Linux/Unix shell commands (`ls`, `cat`, `grep`, `bash`, etc.) and Unix-style file paths (`/home/user/`). It does **not** run natively on Windows Command Prompt or PowerShell.
+
+To run on Windows, use **one of these options**:
+
+1. **WSL2 (Recommended)** — Run inside Windows Subsystem for Linux:
+   ```bash
+   # Install WSL2 if you haven't
+   wsl --install
+   # Then inside WSL2:
+   sudo apt install python3 python3-pip
+   pip install flask flask-cors ddgs
+   python3 ollama_chat.py
+   ```
+   Make sure Ollama is installed on Windows and accessible from WSL2 (usually at `http://localhost:11434`).
+
+2. **Docker** — Run in a Linux container:
+   ```bash
+   docker run -it -p 5000:5000 -w /app -v $(pwd):/app python:3.12-slim \
+     bash -c "pip install flask flask-cors ddgs && python ollama_chat.py"
+   ```
+
+3. **Git Bash** — May work for basic usage but some commands may fail. Not officially supported.
+
+> **Note:** Native Windows support (PowerShell/CMD) is not currently planned. If you need it, contributions are welcome.
+
 ## ☕ Support This Project
 
 OllamaAgent is free and open source. If you find it useful, consider donating to help cover development and server costs. Your support keeps this project alive and improving!
