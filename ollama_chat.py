@@ -796,10 +796,25 @@ def api_chat_stream():
         try:
             # Prepare messages for Ollama (strip timestamps for API)
             api_messages = []
-            # Add system message to inform about available tools
+            # Model-specific system prompts based on known behavior
+            MODEL_HINTS = {
+                'glm': 'IMPORTANT: Always use local_command tool to write files. Use cat > /path/to/file << \'EOF\' ... EOF for creating files. Do NOT output code as text.',
+                'minimax': 'Use tools when available. For file operations, use local_command with shell commands.',
+                'gemma': 'You have access to local_command, web_search, and fetch_article tools. Use them proactively.',
+                'kimi': 'Use the available tools for file operations and web searches. Do not just show code.',
+                'qwen': 'Always use local_command tool for writing files. Use cat > with heredoc syntax.',
+            }
+            model_hint = ''
+            for key, hint in MODEL_HINTS.items():
+                if key in model.lower():
+                    model_hint = hint
+                    break
+            system_content = 'You are an assistant with access to tools. IMPORTANT RULES:\n- When asked to CREATE or WRITE files, you MUST use the local_command tool with a shell command like: cat > /path/to/file << \'EOF\'\n  content here\n  EOF\n- Do NOT just show code in your response - actually write it to disk using local_command\n- Do NOT say you cannot write files - you CAN write files using local_command\n- For creating files with content, use: cat > /path/to/file << \'EOF\' followed by the content, then EOF on a new line\n- Available tools: local_command (execute system commands), web_search (search the internet), fetch_article (read web pages)\n- Write operations will be executed automatically with user notification'
+            if model_hint:
+                system_content += '\n\n' + model_hint
             api_messages.append({
                 'role': 'system',
-                'content': 'You are an assistant with access to tools. IMPORTANT RULES:\n- When asked to CREATE or WRITE files, you MUST use the local_command tool with a shell command like: cat > /path/to/file << \'EOF\'\n  content here\n  EOF\n- Do NOT just show code in your response - actually write it to disk using local_command\n- Do NOT say you cannot write files - you CAN write files using local_command\n- For creating files with content, use: cat > /path/to/file << \'EOF\' followed by the content, then EOF on a new line\n- Available tools: local_command (execute system commands), web_search (search the internet), fetch_article (read web pages)\n- Write operations require user confirmation (a popup will appear)'
+                'content': system_content
             })
             for msg in session_data['messages']:
                 api_messages.append({
