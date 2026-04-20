@@ -1,14 +1,20 @@
-# Ollama WebChat
+# 🤖 OllamaAgent
 
-A web-based chat interface for Ollama with web search capabilities.
+**by Declan2010**
+
+A web-based AI agent for Ollama with web search, local command execution, and file management capabilities.
 
 ## Features
 
-- **Web Interface**: Modern chat UI with real-time responses
+- **Web Interface**: Modern chat UI with real-time streaming responses
 - **Web Search**: Search the internet via DuckDuckGo
-- **Session Management**: Chat history persisted locally
-- **Model Selection**: Choose from available Ollama models
+- **Local Commands**: Execute read and write commands on the host system
+- **File Management**: Create, edit, and write files directly from the agent
+- **Session Management**: Chat history persisted locally per conversation
+- **Model Selection**: Choose from available Ollama models (local & cloud)
 - **Fallback Models**: Automatic fallback if primary model fails
+- **Markdown Rendering**: Full markdown support with syntax highlighting
+- **Dark/Light Theme**: Toggle between themes
 
 ## Requirements
 
@@ -20,11 +26,11 @@ A web-based chat interface for Ollama with web search capabilities.
 
 ```bash
 # Clone the repository
-git clone https://github.com/declan2010/ollama-webchat.git
-cd ollama-webchat
+git clone https://github.com/declan2010/ollamaAgent.git
+cd ollamaAgent
 
 # Install dependencies
-pip install flask flask-cors duckduckgo-search
+pip install flask flask-cors ddgs
 
 # Run the server
 python ollama_chat.py
@@ -42,84 +48,32 @@ Open your browser at: **http://localhost:5000**
 | `SESSION_DIR` | `./sessions` | Directory for chat sessions |
 | `PORT` | `5000` | Server port |
 
-### Example
+## Available Tools
 
-```bash
-export OLLAMA_HOST=http://localhost:11434
-export PORT=5000
-python ollama_chat.py
-```
+The agent can use these tools when available:
 
-## Dependencies
-
-| Package | Version | Purpose |
-|---------|---------|---------|
-| [Flask](https://flask.palletsprojects.com/) | >=2.0 | Web framework |
-| [Flask-CORS](https://flask-cors.readthedocs.io/) | >=3.0 | CORS support |
-| [ddgs](https://pypi.org/project/ddgs/) | >=9.0 | DuckDuckGo search (renamed from duckduckgo-search) |
-
-Install all dependencies:
-```bash
-pip install flask flask-cors ddgs
-```
+| Tool | Description |
+|------|-------------|
+| `local_command` | Execute system commands (read-only auto, write with notification) |
+| `web_search` | Search the internet via DuckDuckGo |
+| `fetch_article` | Fetch and read web page content |
 
 ## Project Structure
 
 ```
-ollama-webchat/
+ollamaAgent/
 ├── ollama_chat.py   # Flask backend with Ollama integration
 ├── templates/
 │   └── index.html   # Frontend chat interface
 ├── README.md         # This file
-├── LICENSE           # MIT License
-└── CONTRIBUTING.md   # Contribution guidelines
+└── LICENSE           # MIT License
 ```
-
-## API Endpoints
-
-### POST /api/chat
-Send a message and receive a response.
-
-**Request:**
-```json
-{
-  "message": "Hello, what is the weather?",
-  "model": "llama3",
-  "fallback_model": "mistral"
-}
-```
-
-**Response:**
-```json
-{
-  "response": "The weather is sunny...",
-  "session_id": "abc12345"
-}
-```
-
-### GET /api/sessions
-List all saved chat sessions.
-
-### GET /api/session/<session_id>
-Load a specific chat session.
-
-### DELETE /api/session/<session_id>
-Delete a chat session.
-
-### GET /api/models
-List available Ollama models.
-
-## Available Tools
-
-The assistant can use these tools when available:
-
-| Tool | Description |
-|------|-------------|
-| `web_search` | Search the internet via DuckDuckGo for current information, news, and facts |
 
 ## Security Notes
 
 - Sessions are stored locally on disk
+- Read commands execute automatically (ls, cat, grep, etc.)
+- Write commands (touch, cp, mv, etc.) auto-execute with notification
 - No authentication by default (add reverse proxy for production)
 
 ## License
