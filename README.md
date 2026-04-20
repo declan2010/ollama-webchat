@@ -80,7 +80,7 @@ ollamaAgent/
 
 OllamaAgent is free and open source. If you find it useful, consider donating to help cover development and server costs. Your support keeps this project alive and improving!
 
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-donate-orange)](https://buymeacoffee.com/declan2010)
+[![PayPal](https://img.shields.io/badge/PayPal-donate-blue)](https://www.paypal.com/donate/?hosted_button_id=P3TK84JYLNUU6)
 
 ## Disclaimer
 
